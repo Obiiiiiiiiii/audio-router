@@ -64,6 +64,15 @@ sealed class TrayApp : ApplicationContext
         SystemEvents.SessionEnding += (_, _) => _store.SaveNow();
 
         _engine.Start();
+
+        // A newer copy being launched asks this one to step aside (see Program.Main).
+        var quit = new EventWaitHandle(false, EventResetMode.AutoReset, Program.QuitEventName);
+        new Thread(() =>
+        {
+            quit.WaitOne();
+            Log.Info("Another copy was launched; handing over");
+            try { invoker.BeginInvoke(() => ExitThread()); } catch { }
+        }) { IsBackground = true, Name = "QuitListener" }.Start();
         Log.Info("Audio Router started");
     }
 

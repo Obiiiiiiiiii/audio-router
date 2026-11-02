@@ -14,7 +14,7 @@ A small Windows tray app for per-app audio. Pick which output each app plays thr
 ## Install
 
 1. Open the latest run of the **build** workflow under the repo's **Actions** tab and download the `AudioRouter` artifact (or grab `AudioRouter.exe` from a release).
-2. Put `AudioRouter.exe` anywhere you like and run it. No installer, no .NET install needed.
+2. Put `AudioRouter.exe` anywhere you like and run it. No installer, no .NET install needed. To update, just run the new exe: it replaces the copy that's already running.
 3. Left-click the tray icon to open the mixer. It starts with Windows by default; right-click the tray icon to turn that off, open the settings folder, or exit.
 
 Windows SmartScreen may warn the first time because the exe isn't signed. Click **More info → Run anyway**.
