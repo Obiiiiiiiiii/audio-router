@@ -23,6 +23,9 @@ static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new TrayApp());
+        Log.Info("Audio Router stopped");
+        try { mutex.ReleaseMutex(); } catch { }
+        Environment.Exit(0); // don't wait on COM finalizers or stray threads
     }
 
     static bool TakeOverFromRunningCopy(Mutex mutex)

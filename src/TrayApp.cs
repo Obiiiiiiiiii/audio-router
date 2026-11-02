@@ -97,8 +97,14 @@ sealed class TrayApp : ApplicationContext
         Log.Info("Audio Router exiting");
         _tray.Visible = false;
         _tray.Dispose();
-        _engine.Dispose();
-        _window.Dispose();
+        _store.SaveNow();
+
+        // Releasing Core Audio objects can block if Windows' audio service is busy. Rules are already
+        // saved, so never let that keep the process (and the exe file) alive.
+        new Thread(() => { Thread.Sleep(3000); Environment.Exit(0); }) { IsBackground = true }.Start();
+
+        try { _engine.Dispose(); } catch { }
+        try { _window.Dispose(); } catch { }
         base.ExitThreadCore();
     }
 
