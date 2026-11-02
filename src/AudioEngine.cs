@@ -497,7 +497,9 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
     {
         if (pid != 0 && _procCache.TryGetValue(pid, out var cached)) return cached;
 
-        string? path = pid != 0 ? QueryImagePath(pid) : null;
+        // Sandboxed processes (Chrome, Discord, Spotify and other Chromium apps) refuse to be opened,
+        // so fall back to the exe path Windows embeds in the session identifier.
+        string? path = (pid != 0 ? QueryImagePath(pid) : null) ?? DosPath(NtPathFromSessionIdentifier(sessionIdentifier));
         string? key = null;
         string? display = null;
         if (path != null)
@@ -512,8 +514,9 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             catch { }
         }
 
-        if (key == null && ExeFromSessionIdentifier(sessionIdentifier) is string exe)
+        if (key == null && NtPathFromSessionIdentifier(sessionIdentifier) is string ntPath)
         {
+            var exe = ntPath[(ntPath.LastIndexOf('\\') + 1)..];
             key = exe.ToLowerInvariant();
             display = System.IO.Path.GetFileNameWithoutExtension(exe);
         }
@@ -535,7 +538,8 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         return info;
     }
 
-    static string? ExeFromSessionIdentifier(string? id)
+    /// <summary>"{...}|\\Device\\HarddiskVolume3\\...\\Discord.exe%b{...}" -> "\\Device\\HarddiskVolume3\\...\\Discord.exe"</summary>
+    static string? NtPathFromSessionIdentifier(string? id)
     {
         if (string.IsNullOrEmpty(id)) return null;
         int bar = id.IndexOf('|');
@@ -543,9 +547,31 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         var rest = id[(bar + 1)..];
         int tail = rest.IndexOf("%b", StringComparison.Ordinal);
         if (tail >= 0) rest = rest[..tail];
-        var name = rest[(rest.LastIndexOf('\\') + 1)..];
-        return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name : null;
+        return rest.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? rest : null;
     }
+
+    /// <summary>Turn "\\Device\\HarddiskVolume3\\x\\y.exe" into "C:\\x\\y.exe" so we can read its icon and description.</summary>
+    static string? DosPath(string? ntPath)
+    {
+        if (ntPath == null) return null;
+        if (ntPath.Length > 2 && ntPath[1] == ':') return File.Exists(ntPath) ? ntPath : null;
+        foreach (var drive in Environment.GetLogicalDrives())
+        {
+            var letter = drive.TrimEnd('\\');
+            var sb = new StringBuilder(260);
+            if (QueryDosDevice(letter, sb, (uint)sb.Capacity) == 0) continue;
+            var device = sb.ToString();
+            if (ntPath.StartsWith(device + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                var dos = letter + ntPath[device.Length..];
+                return File.Exists(dos) ? dos : null;
+            }
+        }
+        return null;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint QueryDosDevice(string deviceName, StringBuilder targetPath, uint max);
 
     static string? QueryImagePath(uint pid)
     {
