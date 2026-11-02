@@ -15,14 +15,25 @@ static class Program
         using var mutex = new Mutex(true, MutexName, out bool first);
         if (!first && !TakeOverFromRunningCopy(mutex)) return;
 
-        Application.ThreadException += (_, e) => Log.Error("Unhandled UI exception", e.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error("Unhandled exception", e.ExceptionObject as Exception);
+        Application.ThreadException += (_, e) => Log.Crash("Unhandled UI exception", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Crash("Unhandled exception", e.ExceptionObject as Exception);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new TrayApp());
+        try
+        {
+            Application.Run(new TrayApp());
+        }
+        catch (Exception ex)
+        {
+            Log.Crash("Audio Router failed to start", ex);
+            MessageBox.Show(
+                "Audio Router hit an error and has to close.\n\nDetails are in " +
+                System.IO.Path.Combine(RuleStore.Folder, "log.txt"),
+                "Audio Router", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
         Log.Info("Audio Router stopped");
         try { mutex.ReleaseMutex(); } catch { }
         Environment.Exit(0); // don't wait on COM finalizers or stray threads

@@ -93,7 +93,11 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     void EnsureEnumerator()
     {
-        _comEnumerator ??= (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+        if (_comEnumerator == null)
+        {
+            try { _comEnumerator = CoreAudio.CreateDeviceEnumerator(); }
+            catch (Exception ex) { Log.Crash("Creating the device enumerator failed", ex); }
+        }
         if (_enumerator != null) return;
         _enumerator = new MMDeviceEnumerator();
         _enumerator.RegisterEndpointNotificationCallback(this);
@@ -130,7 +134,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         }
         catch (Exception ex)
         {
-            Log.Error("Reconcile failed; rebuilding audio objects", ex);
+            Log.Crash("Reconcile failed; rebuilding audio objects", ex);
             ResetAudioObjects();
         }
         Changed?.Invoke();
@@ -155,7 +159,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
                 var name = dev.FriendlyName;
                 _store.Data.KnownDevices[id] = name;
 
-                var mgr = CoreAudio.ActivateSessionManager(_comEnumerator!, id);
+                var mgr = CoreAudio.ActivateSessionManager(_comEnumerator ?? throw new InvalidOperationException("no device enumerator"), id);
                 // Windows only sends "session created" after the enumerator has been requested once.
                 CoreAudio.Check(mgr.GetSessionEnumerator(out _), "GetSessionEnumerator");
                 var sink = new SessionCreatedSink(() => RequestReconcile());
@@ -167,7 +171,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             }
             catch (Exception ex)
             {
-                Log.Error($"Skipping device {id}", ex);
+                Log.Crash($"Skipping device {id}", ex);
                 dev.Dispose();
             }
         }
@@ -260,7 +264,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    Log.Error($"Reading session {i} on {entry.Name} failed", ex);
+                    Log.Crash($"Reading session {i} on {entry.Name} failed", ex);
                 }
             }
 

@@ -10,6 +10,10 @@ static class Log
     public static void Error(string message, Exception? ex = null) =>
         Write("ERROR", ex == null ? message : $"{message}: {ex.GetType().Name}: {ex.Message}");
 
+    /// <summary>Error with full stack trace, for things we didn't expect.</summary>
+    public static void Crash(string message, Exception? ex) =>
+        Write("ERROR", $"{message}: {ex}");
+
     static void Write(string level, string message)
     {
         try

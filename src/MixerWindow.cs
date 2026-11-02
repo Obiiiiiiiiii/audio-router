@@ -180,8 +180,10 @@ sealed class MixerWindow : Form
     void Rebuild()
     {
         _list.SuspendLayout();
-        foreach (Control c in _list.Controls) c.Dispose();
+        // Snapshot first: disposing a control removes it from the collection we'd be iterating.
+        var old = _list.Controls.Cast<Control>().ToList();
         _list.Controls.Clear();
+        foreach (var c in old) c.Dispose();
         _rows.Clear();
 
         int w = S(380);

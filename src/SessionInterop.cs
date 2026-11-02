@@ -6,9 +6,6 @@ namespace AudioRouter.Interop;
 // listing sessions doesn't unregister/re-register notifications on every scan, and so each call's
 // HRESULT is visible to us.
 
-[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-class MMDeviceEnumeratorCom { }
-
 [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDeviceEnumerator
 {
@@ -105,6 +102,19 @@ static class CoreAudio
         try { return Marshal.PtrToStringUni(p); }
         finally { Marshal.FreeCoTaskMem(p); }
     }
+
+    /// <summary>CoCreateInstance straight to the interface, so there is no managed cast involved.</summary>
+    public static IMMDeviceEnumerator CreateDeviceEnumerator()
+    {
+        var clsid = new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E");
+        var iid = typeof(IMMDeviceEnumerator).GUID;
+        Check(CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_ALL, ref iid, out var e), "CoCreateInstance(MMDeviceEnumerator)");
+        return e;
+    }
+
+    [DllImport("ole32.dll", PreserveSig = true)]
+    static extern int CoCreateInstance(ref Guid clsid, IntPtr outer, int clsCtx, ref Guid iid,
+        [MarshalAs(UnmanagedType.Interface)] out IMMDeviceEnumerator instance);
 
     public static IAudioSessionManager2 ActivateSessionManager(IMMDeviceEnumerator enumerator, string deviceId)
     {
