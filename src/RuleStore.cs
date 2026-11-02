@@ -29,6 +29,9 @@ sealed class RuleData
 
     /// <summary>Every output device we've ever seen, so disconnected ones can still be picked and named.</summary>
     public Dictionary<string, string> KnownDevices { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Set once we've applied the first-run "start with Windows" default.</summary>
+    public bool StartupConfigured { get; set; }
 }
 
 /// <summary>Loads and saves rules.json. Writes go to a temp file first so a crash can't corrupt the rules.</summary>
@@ -68,6 +71,7 @@ sealed class RuleStore
                     {
                         Apps = new(loaded.Apps ?? new(), StringComparer.OrdinalIgnoreCase),
                         KnownDevices = new(loaded.KnownDevices ?? new(), StringComparer.OrdinalIgnoreCase),
+                        StartupConfigured = loaded.StartupConfigured,
                     };
                 }
             }

@@ -16,6 +16,19 @@ sealed class TrayApp : ApplicationContext
     {
         _store.Load();
 
+        // Start with Windows by default on first run; afterwards respect the menu toggle.
+        // Re-writing the entry each launch keeps it pointing at the exe if it was moved.
+        if (!_store.Data.StartupConfigured)
+        {
+            Startup.Set(true);
+            _store.Data.StartupConfigured = true;
+            _store.SaveNow();
+        }
+        else if (Startup.IsEnabled)
+        {
+            Startup.Set(true);
+        }
+
         // Hidden control so COM callbacks can marshal onto the UI thread from the start.
         var invoker = new Control();
         invoker.CreateControl();

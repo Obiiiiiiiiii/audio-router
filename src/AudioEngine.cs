@@ -2,7 +2,8 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using NAudio.CoreAudioApi;
-using NAudio.CoreAudioApi.Interfaces;
+using IMMNotificationClient = NAudio.CoreAudioApi.Interfaces.IMMNotificationClient;
+using AudioRouter.Interop;
 
 namespace AudioRouter;
 
@@ -36,13 +37,32 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1500 };
 
     MMDeviceEnumerator? _enumerator;
-    readonly Dictionary<string, MMDevice> _devices = new(StringComparer.OrdinalIgnoreCase);
+    IMMDeviceEnumerator? _comEnumerator;
+    readonly Dictionary<string, DeviceEntry> _devices = new(StringComparer.OrdinalIgnoreCase);
+
+    sealed class DeviceEntry
+    {
+        public required MMDevice Device { get; init; }
+        public required string Name { get; init; }
+        public required IAudioSessionManager2 Sessions { get; init; }
+        public required SessionCreatedSink Sink { get; init; }
+        public int LastSessionCount = -1;
+
+        public void Dispose()
+        {
+            try { Sessions.UnregisterSessionNotification(Sink); } catch { }
+            try { Device.Dispose(); } catch { }
+        }
+    }
     bool _devicesDirty = true;
     int _ticksSinceDeviceScan;
     int _reconcileQueued;
 
     sealed record ProcInfo(string Key, string? Path, string DisplayName);
-    sealed record LiveSession(string DeviceId, uint Pid, string InstanceId, string Key, AudioSessionControl Control);
+    sealed record LiveSession(string DeviceId, uint Pid, string InstanceId, string Key, IAudioSessionControl2 Control)
+    {
+        public ISimpleAudioVolume? Volume => Control as ISimpleAudioVolume;
+    }
 
     readonly Dictionary<uint, ProcInfo> _procCache = new();
     readonly HashSet<string> _volumeApplied = new();
@@ -73,6 +93,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     void EnsureEnumerator()
     {
+        _comEnumerator ??= (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
         if (_enumerator != null) return;
         _enumerator = new MMDeviceEnumerator();
         _enumerator.RegisterEndpointNotificationCallback(this);
@@ -133,8 +154,15 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             {
                 var name = dev.FriendlyName;
                 _store.Data.KnownDevices[id] = name;
-                dev.AudioSessionManager.OnSessionCreated += (_, _) => RequestReconcile();
-                _devices[id] = dev;
+
+                var mgr = CoreAudio.ActivateSessionManager(_comEnumerator!, id);
+                // Windows only sends "session created" after the enumerator has been requested once.
+                CoreAudio.Check(mgr.GetSessionEnumerator(out _), "GetSessionEnumerator");
+                var sink = new SessionCreatedSink(() => RequestReconcile());
+                int hr = mgr.RegisterSessionNotification(sink);
+                if (hr < 0) Log.Error($"RegisterSessionNotification on {name} failed (0x{hr:X8}); relying on polling");
+
+                _devices[id] = new DeviceEntry { Device = dev, Name = name, Sessions = mgr, Sink = sink };
                 Log.Info($"Device connected: {name}");
             }
             catch (Exception ex)
@@ -147,7 +175,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         foreach (var gone in _devices.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             Log.Info($"Device gone: {_store.Data.KnownDevices.GetValueOrDefault(gone, gone)}");
-            try { _devices[gone].Dispose(); } catch { }
+            _devices[gone].Dispose();
             _devices.Remove(gone);
         }
 
@@ -176,42 +204,72 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
     void ScanSessions()
     {
         var list = new List<LiveSession>();
-        foreach (var (deviceId, dev) in _devices)
+        foreach (var (deviceId, entry) in _devices.ToList())
         {
+            IAudioSessionEnumerator sessions;
+            int count;
             try
             {
-                var mgr = dev.AudioSessionManager;
-                mgr.RefreshSessions();
-                var sessions = mgr.Sessions;
-                for (int i = 0; i < sessions.Count; i++)
+                CoreAudio.Check(entry.Sessions.GetSessionEnumerator(out sessions), "GetSessionEnumerator");
+                CoreAudio.Check(sessions.GetCount(out count), "GetCount");
+            }
+            catch (Exception ex)
+            {
+                // Typical when a Bluetooth device drops mid-scan. Throw the device away so it's rebuilt fresh.
+                Log.Error($"Listing sessions on {entry.Name} failed", ex);
+                entry.Dispose();
+                _devices.Remove(deviceId);
+                _devicesDirty = true;
+                continue;
+            }
+
+            var keys = new List<string>();
+            for (int i = 0; i < count; i++)
+            {
+                // Each session is handled on its own, so one odd session can't hide the rest.
+                try
                 {
-                    var s = sessions[i];
-                    if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+                    CoreAudio.Check(sessions.GetSession(i, out var s), "GetSession");
+                    CoreAudio.Check(s.GetState(out var state), "GetState");
+                    if (state == 2) continue; // AudioSessionStateExpired
+
+                    s.GetSessionInstanceIdentifier(out var instPtr);
+                    var instanceId = CoreAudio.TakeString(instPtr) ?? $"{deviceId}|{i}";
 
                     string key;
                     uint pid = 0;
-                    if (s.IsSystemSoundsSession)
+                    if (s.IsSystemSoundsSession() == 0)
                     {
                         key = SystemSoundsKey;
                     }
                     else
                     {
-                        pid = s.GetProcessID;
-                        var info = GetProcInfo(pid);
-                        if (info == null) continue;
+                        int hr = s.GetProcessId(out pid);
+                        if (hr < 0) pid = 0;
+                        s.GetSessionIdentifier(out var idPtr);
+                        var info = GetProcInfo(pid, CoreAudio.TakeString(idPtr));
+                        if (info == null)
+                        {
+                            Log.Error($"Couldn't identify session {i} on {entry.Name} (pid {pid}, hr 0x{hr:X8})");
+                            continue;
+                        }
                         key = info.Key;
                     }
-                    list.Add(new LiveSession(deviceId, pid, s.GetSessionInstanceIdentifier ?? $"{deviceId}|{pid}|{i}", key, s));
+                    keys.Add(key);
+                    list.Add(new LiveSession(deviceId, pid, instanceId, key, s));
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Reading session {i} on {entry.Name} failed", ex);
                 }
             }
-            catch (Exception ex)
+
+            if (count != entry.LastSessionCount)
             {
-                // Typical when a Bluetooth device drops mid-scan; next device scan cleans it up.
-                Log.Error($"Session scan failed on {_store.Data.KnownDevices.GetValueOrDefault(deviceId, deviceId)}", ex);
-                _devicesDirty = true;
+                entry.LastSessionCount = count;
+                Log.Info($"{entry.Name}: {count} session(s) -> {string.Join(", ", keys)}");
             }
         }
-        foreach (var old in _sessions) { try { old.Control.Dispose(); } catch { } }
         _sessions = list;
 
         // Forget state for sessions/processes that no longer exist (pids get reused).
@@ -234,9 +292,9 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             {
                 try
                 {
-                    var vol = s.Control.SimpleAudioVolume;
-                    if (rule.Volume is float v) vol.Volume = Math.Clamp(v, 0f, 1f);
-                    if (rule.Muted is bool m) vol.Mute = m;
+                    var vol = s.Volume ?? throw new InvalidOperationException("no ISimpleAudioVolume");
+                    if (rule.Volume is float v) CoreAudio.Check(vol.SetMasterVolume(Math.Clamp(v, 0f, 1f), IntPtr.Zero), "SetMasterVolume");
+                    if (rule.Muted is bool m) CoreAudio.Check(vol.SetMute(m, IntPtr.Zero), "SetMute");
                     Log.Info($"Applied volume {rule.Volume:P0}{(rule.Muted == true ? " (muted)" : "")} to {s.Key}");
                 }
                 catch (Exception ex) { Log.Error($"Setting volume for {s.Key} failed", ex); }
@@ -285,8 +343,9 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             float volume = 1f; bool muted = false;
             try
             {
-                var v = first.Control.SimpleAudioVolume;
-                volume = v.Volume; muted = v.Mute;
+                var v = first.Volume;
+                if (v != null && v.GetMasterVolume(out var lvl) >= 0) volume = lvl;
+                if (v != null && v.GetMute(out var mu) >= 0) muted = mu;
             }
             catch { }
 
@@ -330,13 +389,15 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     void ResetAudioObjects()
     {
-        foreach (var d in _devices.Values) { try { d.Dispose(); } catch { } }
+        foreach (var d in _devices.Values) d.Dispose();
         _devices.Clear();
         _sessions = new();
         _routedTo.Clear();
         try { _enumerator?.UnregisterEndpointNotificationCallback(this); } catch { }
         try { _enumerator?.Dispose(); } catch { }
         _enumerator = null;
+        CoreAudio.Release(_comEnumerator);
+        _comEnumerator = null;
         _devicesDirty = true;
     }
 
@@ -348,7 +409,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         _store.GetOrCreate(key, displayName).Volume = volume;
         foreach (var s in _sessions.Where(s => s.Key == key))
         {
-            try { s.Control.SimpleAudioVolume.Volume = volume; } catch { }
+            try { s.Volume?.SetMasterVolume(volume, IntPtr.Zero); } catch { }
         }
         _store.SaveSoon();
     }
@@ -358,7 +419,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         _store.GetOrCreate(key, displayName).Muted = muted;
         foreach (var s in _sessions.Where(s => s.Key == key))
         {
-            try { s.Control.SimpleAudioVolume.Mute = muted; } catch { }
+            try { s.Volume?.SetMute(muted, IntPtr.Zero); } catch { }
         }
         _store.SaveSoon();
     }
@@ -403,20 +464,23 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     public (float volume, bool muted)? GetMaster()
     {
-        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var dev)) return null;
+        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var entry)) return null;
+        var dev = entry.Device;
         try { return (dev.AudioEndpointVolume.MasterVolumeLevelScalar, dev.AudioEndpointVolume.Mute); }
         catch { return null; }
     }
 
     public void SetMasterVolume(float volume)
     {
-        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var dev)) return;
+        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var entry)) return;
+        var dev = entry.Device;
         try { dev.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(volume, 0f, 1f); } catch { }
     }
 
     public void SetMasterMuted(bool muted)
     {
-        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var dev)) return;
+        if (DefaultDeviceId == null || !_devices.TryGetValue(DefaultDeviceId, out var entry)) return;
+        var dev = entry.Device;
         try { dev.AudioEndpointVolume.Mute = muted; } catch { }
     }
 
@@ -425,13 +489,17 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     // ---------------------------------------------------------------- process lookup
 
-    ProcInfo? GetProcInfo(uint pid)
+    /// <summary>
+    /// Work out which exe a session belongs to: from the process if we can open it, otherwise from the
+    /// session identifier, which embeds the exe path ("...|\Device\HarddiskVolume3\...\Discord.exe%b{...}").
+    /// </summary>
+    ProcInfo? GetProcInfo(uint pid, string? sessionIdentifier)
     {
-        if (_procCache.TryGetValue(pid, out var cached)) return cached;
+        if (pid != 0 && _procCache.TryGetValue(pid, out var cached)) return cached;
 
-        string? path = QueryImagePath(pid);
-        string key;
-        string display;
+        string? path = pid != 0 ? QueryImagePath(pid) : null;
+        string? key = null;
+        string? display = null;
         if (path != null)
         {
             key = System.IO.Path.GetFileName(path).ToLowerInvariant();
@@ -443,7 +511,14 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             }
             catch { }
         }
-        else
+
+        if (key == null && ExeFromSessionIdentifier(sessionIdentifier) is string exe)
+        {
+            key = exe.ToLowerInvariant();
+            display = System.IO.Path.GetFileNameWithoutExtension(exe);
+        }
+
+        if (key == null && pid != 0)
         {
             try
             {
@@ -451,15 +526,25 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
                 key = (p.ProcessName + ".exe").ToLowerInvariant();
                 display = p.ProcessName;
             }
-            catch
-            {
-                return null; // process already exited
-            }
+            catch { }
         }
 
-        var info = new ProcInfo(key, path, display);
-        _procCache[pid] = info;
+        if (key == null) return null;
+        var info = new ProcInfo(key, path, display ?? key);
+        if (pid != 0) _procCache[pid] = info;
         return info;
+    }
+
+    static string? ExeFromSessionIdentifier(string? id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        int bar = id.IndexOf('|');
+        if (bar < 0) return null;
+        var rest = id[(bar + 1)..];
+        int tail = rest.IndexOf("%b", StringComparison.Ordinal);
+        if (tail >= 0) rest = rest[..tail];
+        var name = rest[(rest.LastIndexOf('\\') + 1)..];
+        return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name : null;
     }
 
     static string? QueryImagePath(uint pid)
