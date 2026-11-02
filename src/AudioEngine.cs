@@ -93,14 +93,20 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
     void EnsureEnumerator()
     {
+        // Order matters. Windows hands out one shared MMDeviceEnumerator object, and .NET keeps one
+        // wrapper per COM object. NAudio creates it as its own class type, so NAudio must go first;
+        // our interface view below then reuses that wrapper. (Creating ours first made NAudio's
+        // constructor fail with InvalidCastException.)
+        if (_enumerator == null)
+        {
+            _enumerator = new MMDeviceEnumerator();
+            _enumerator.RegisterEndpointNotificationCallback(this);
+        }
         if (_comEnumerator == null)
         {
             try { _comEnumerator = CoreAudio.CreateDeviceEnumerator(); }
             catch (Exception ex) { Log.Crash("Creating the device enumerator failed", ex); }
         }
-        if (_enumerator != null) return;
-        _enumerator = new MMDeviceEnumerator();
-        _enumerator.RegisterEndpointNotificationCallback(this);
     }
 
     /// <summary>Thread-safe: schedule a reconcile on the UI thread (coalesced).</summary>
@@ -400,7 +406,6 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         try { _enumerator?.UnregisterEndpointNotificationCallback(this); } catch { }
         try { _enumerator?.Dispose(); } catch { }
         _enumerator = null;
-        CoreAudio.Release(_comEnumerator);
         _comEnumerator = null;
         _devicesDirty = true;
     }
