@@ -178,26 +178,19 @@ sealed class TrayApp : ApplicationContext
         base.ExitThreadCore();
     }
 
-    /// <summary>Draws a simple speaker-with-arrow icon so we don't need to ship an .ico.</summary>
+    /// <summary>A plain white speaker (the Windows "Volume" glyph), so we don't need to ship an .ico.</summary>
     static Icon MakeTrayIcon()
     {
         int size = SystemInformation.SmallIconSize.Width;
         using var bmp = new Bitmap(size, size);
         using (var g = Graphics.FromImage(bmp))
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
-            float s = size / 16f;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using var font = new Font("Segoe MDL2 Assets", size * 0.85f, GraphicsUnit.Pixel);
             using var brush = new SolidBrush(Color.White);
-            g.FillPolygon(brush, new[]
-            {
-                new PointF(1 * s, 6 * s), new PointF(4 * s, 6 * s), new PointF(8 * s, 2.5f * s),
-                new PointF(8 * s, 13.5f * s), new PointF(4 * s, 10 * s), new PointF(1 * s, 10 * s),
-            });
-            using var pen = new Pen(Theme.Accent, 1.6f * s) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLine(pen, 10 * s, 8 * s, 15 * s, 8 * s);
-            g.DrawLine(pen, 12.5f * s, 5.5f * s, 15 * s, 8 * s);
-            g.DrawLine(pen, 12.5f * s, 10.5f * s, 15 * s, 8 * s);
+            using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString(Theme.GlyphVolume, font, brush, new RectangleF(0, 0, size, size), fmt);
         }
         return Icon.FromHandle(bmp.GetHicon());
     }

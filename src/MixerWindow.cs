@@ -183,6 +183,7 @@ sealed class MixerWindow : Form
 
     void Rebuild()
     {
+        var scroll = _list.AutoScrollPosition;
         _list.SuspendLayout();
         // Snapshot first: disposing a control removes it from the collection we'd be iterating.
         var old = _list.Controls.Cast<Control>().ToList();
@@ -210,11 +211,14 @@ sealed class MixerWindow : Form
                 y += S(32);
             }
 
-            var row = new AppRow(_engine, app, GetIcon(app), this, S);
+            var key = app.Key;
+            var row = new AppRow(_engine, app, GetIcon(app), this, S,
+                expanded: string.Equals(_expandedKey, key, StringComparison.OrdinalIgnoreCase),
+                toggle: () => BeginInvoke(() => ToggleExpanded(key)));
             row.SetBounds(S(8), y, w - S(16) - SystemInformation.VerticalScrollBarWidth / 2, row.PreferredRowHeight);
             _list.Controls.Add(row);
             _rows[app.Key] = row;
-            y += row.PreferredRowHeight + S(6);
+            y += row.PreferredRowHeight + S(4);
         }
 
         if (_engine.Apps.Count == 0)
@@ -239,6 +243,7 @@ sealed class MixerWindow : Form
         _list.SetBounds(0, _header.Bottom, w, listH);
         _footer.SetBounds(S(14), _list.Bottom, w - S(28), footerH);
         Height = _header.Height + listH + footerH + S(2);
+        _list.AutoScrollPosition = new Point(-scroll.X, -scroll.Y);
         if (Visible) PositionNearCursor();
         Invalidate();
     }
@@ -263,6 +268,16 @@ sealed class MixerWindow : Form
     }
 
     bool _addMenuOpen;
+
+    /// <summary>One app's controls open at a time keeps the list short.</summary>
+    string? _expandedKey;
+
+    void ToggleExpanded(string key)
+    {
+        _expandedKey = string.Equals(_expandedKey, key, StringComparison.OrdinalIgnoreCase) ? null : key;
+        _signature = "";
+        RefreshFromEngine();
+    }
 
     Image? GetIcon(AppView app)
     {
@@ -304,15 +319,17 @@ sealed class AppRow : Panel
 
     public bool Interacting => _slider.Dragging || (_output?.Interacting ?? false) || (_backup?.Interacting ?? false);
 
-    public AppRow(AudioEngine engine, AppView app, Image? icon, MixerWindow owner, Func<int, int> S)
+    public AppRow(AudioEngine engine, AppView app, Image? icon, MixerWindow owner, Func<int, int> S, bool expanded, Action toggle)
     {
         _engine = engine;
         _app = app;
         BackColor = Theme.Surface;
+        Cursor = Cursors.Hand;
         int w = S(380) - S(16) - SystemInformation.VerticalScrollBarWidth / 2;
 
+        // Header (always visible): icon, name, volume %, mute, fold-out chevron. Clicking it toggles.
         var iconBox = new PictureBox { Image = icon, SizeMode = PictureBoxSizeMode.CenterImage, BackColor = Theme.Surface };
-        iconBox.SetBounds(S(10), S(10), S(22), S(22));
+        iconBox.SetBounds(S(10), S(9), S(22), S(22));
 
         var name = new Label
         {
@@ -323,51 +340,82 @@ sealed class AppRow : Panel
             Font = Theme.Body,
             TextAlign = ContentAlignment.MiddleLeft,
         };
-        name.SetBounds(S(40), S(10), w - S(40) - S(70), S(22));
+        name.SetBounds(S(40), S(9), w - S(40) - S(110), S(22));
         new ToolTip().SetToolTip(name, app.Key == AudioEngine.SystemSoundsKey ? "Windows system sounds" : app.Key);
 
-        var forget = new GlyphButton { Text = "", ForeColor = Theme.TextDim, Font = new Font("Segoe MDL2 Assets", 8f) };
-        forget.SetBounds(w - S(30), S(10), S(22), S(22));
-        forget.Visible = app.Rule != null;
-        new ToolTip().SetToolTip(forget, "Forget this app's saved settings");
-        forget.Click += (_, _) => _engine.Forget(app.Key);
-
-        _mute.SetBounds(S(8), S(38), S(28), S(24));
-        _slider.SetBounds(S(40), S(38), w - S(40) - S(50), S(24));
-        _pct.SetBounds(w - S(46), S(38), S(36), S(24));
+        _pct.SetBounds(w - S(106), S(9), S(36), S(22));
         _pct.TextAlign = ContentAlignment.MiddleRight;
         _pct.ForeColor = Theme.Text;
         _pct.BackColor = Theme.Surface;
 
-        Controls.AddRange(new Control[] { iconBox, name, forget, _mute, _slider, _pct });
+        _mute.SetBounds(w - S(66), S(8), S(28), S(24));
 
-        int y = S(68);
-        if (!app.IsSystemSounds && engine.RoutingAvailable)
+        var chevron = new GlyphButton
         {
-            var outLabel = MakeCaption("Output", S(40), y, S);
-            _output = new DeviceCombo();
-            _output.SetBounds(S(40), y + S(16), (w - S(40) - S(16)) / 2, S(24));
+            Text = expanded ? "\uE70E" : "\uE70D",
+            ForeColor = Theme.TextDim,
+            Font = new Font("Segoe MDL2 Assets", 8f),
+        };
+        chevron.SetBounds(w - S(34), S(8), S(26), S(24));
+        new ToolTip().SetToolTip(chevron, expanded ? "Hide controls" : "Show controls");
 
-            _backupLabel = MakeCaption("If unavailable", S(40) + (w - S(40) - S(16)) / 2 + S(6), y, S);
-            _backup = new DeviceCombo();
-            _backup.SetBounds(_backupLabel.Left, y + S(16), (w - S(40) - S(16)) / 2, S(24));
+        foreach (var c in new Control[] { this, iconBox, name, _pct, chevron })
+            c.Click += (_, _) => toggle();
 
-            Controls.AddRange(new Control[] { outLabel, _output, _backupLabel, _backup });
-            y += S(46);
+        Controls.AddRange(new Control[] { iconBox, name, _pct, _mute, chevron });
 
-            _output.SelectionChangeCommitted += (_, _) =>
+        int y = S(40);
+        if (expanded)
+        {
+            _slider.SetBounds(S(40), y, w - S(40) - S(14), S(24));
+            Controls.Add(_slider);
+            y += S(30);
+
+            if (!app.IsSystemSounds && engine.RoutingAvailable)
             {
-                if (_updating) return;
-                _engine.SetOutput(app.Key, app.DisplayName, _output.SelectedId);
-            };
-            _backup.SelectionChangeCommitted += (_, _) =>
+                var outLabel = MakeCaption("Output", S(40), y, S);
+                _output = new DeviceCombo();
+                _output.SetBounds(S(40), y + S(16), (w - S(40) - S(16)) / 2, S(24));
+
+                _backupLabel = MakeCaption("If unavailable", S(40) + (w - S(40) - S(16)) / 2 + S(6), y, S);
+                _backup = new DeviceCombo();
+                _backup.SetBounds(_backupLabel.Left, y + S(16), (w - S(40) - S(16)) / 2, S(24));
+
+                Controls.AddRange(new Control[] { outLabel, _output, _backupLabel, _backup });
+                y += S(46);
+
+                _output.SelectionChangeCommitted += (_, _) =>
+                {
+                    if (_updating) return;
+                    _engine.SetOutput(app.Key, app.DisplayName, _output.SelectedId);
+                };
+                _backup.SelectionChangeCommitted += (_, _) =>
+                {
+                    if (_updating) return;
+                    _engine.SetBackup(app.Key, app.DisplayName, _backup.SelectedId);
+                };
+                FillCombos();
+            }
+
+            if (app.Rule != null)
             {
-                if (_updating) return;
-                _engine.SetBackup(app.Key, app.DisplayName, _backup.SelectedId);
-            };
-            FillCombos();
+                var forget = new LinkLabel
+                {
+                    Text = "Forget saved settings",
+                    Font = Theme.Small,
+                    LinkColor = Theme.TextDim,
+                    ActiveLinkColor = Theme.Text,
+                    BackColor = Theme.Surface,
+                    LinkBehavior = LinkBehavior.HoverUnderline,
+                    TextAlign = ContentAlignment.MiddleRight,
+                };
+                forget.SetBounds(w - S(170), y + S(2), S(156), S(18));
+                forget.LinkClicked += (_, _) => _engine.Forget(app.Key);
+                Controls.Add(forget);
+                y += S(22);
+            }
         }
-        PreferredRowHeight = y + S(8);
+        PreferredRowHeight = y + (expanded ? S(6) : 0);
 
         _slider.ValueChanged += v =>
         {
