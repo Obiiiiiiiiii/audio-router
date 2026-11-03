@@ -47,6 +47,16 @@ sealed class TrayApp : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open mixer", null, (_, _) => _window.ShowPopup());
         menu.Items.Add(_startup);
+        var hidden = new ToolStripMenuItem("Hidden apps");
+        menu.Items.Add(hidden);
+        menu.Opening += (_, _) =>
+        {
+            hidden.DropDownItems.Clear();
+            var apps = _engine.HiddenApps;
+            hidden.Enabled = apps.Count > 0;
+            foreach (var (key, name) in apps)
+                hidden.DropDownItems.Add(new ToolStripMenuItem($"Show {name}", null, (_, _) => _engine.Unhide(key)));
+        };
         menu.Items.Add("Open settings folder", null, (_, _) => OpenFolder());
         _updateItem = new ToolStripMenuItem("Check for updates", null, async (_, _) => await UpdateClicked());
         menu.Items.Add(_updateItem);

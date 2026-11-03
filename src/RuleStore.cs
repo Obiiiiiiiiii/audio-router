@@ -32,6 +32,9 @@ sealed class RuleData
 
     /// <summary>Set once we've applied the first-run "start with Windows" default.</summary>
     public bool StartupConfigured { get; set; }
+
+    /// <summary>Apps hidden from the mixer (key -> display name). Their saved rules still apply.</summary>
+    public Dictionary<string, string> Hidden { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>Loads and saves rules.json. Writes go to a temp file first so a crash can't corrupt the rules.</summary>
@@ -72,6 +75,7 @@ sealed class RuleStore
                         Apps = new(loaded.Apps ?? new(), StringComparer.OrdinalIgnoreCase),
                         KnownDevices = new(loaded.KnownDevices ?? new(), StringComparer.OrdinalIgnoreCase),
                         StartupConfigured = loaded.StartupConfigured,
+                        Hidden = new(loaded.Hidden ?? new(), StringComparer.OrdinalIgnoreCase),
                     };
                 }
             }
