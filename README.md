@@ -21,6 +21,10 @@ A small Windows tray app for per-app audio. Pick which output each app plays thr
 
 Windows SmartScreen may warn the first time because the exe isn't signed. Click **More info → Run anyway**.
 
+## Updating
+
+Right-click the tray icon and pick **Check for updates** (it also checks by itself a little after startup and every few hours). When a new release is out, click the notification or the menu item and it downloads, swaps itself and restarts. Every merge to `main` publishes a new release. Self-update needs the repo to be public, since the app reads GitHub Releases without logging in.
+
 ## Settings and logs
 
 Stored in `%AppData%\AudioRouter`:

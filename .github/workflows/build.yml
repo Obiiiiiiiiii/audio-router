@@ -3,7 +3,6 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -18,14 +17,31 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      # main builds are releases (0.1.N); PR/branch builds are dev builds (0.0.N),
+      # so the in-app updater always treats a release as newer than a test build.
+      - name: Pick version
+        shell: bash
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "VERSION=0.1.${{ github.run_number }}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.${{ github.run_number }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Publish single-file exe
-        run: dotnet publish AudioRouter.csproj -c Release -o out
+        run: dotnet publish AudioRouter.csproj -c Release -o out -p:Version=${{ env.VERSION }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: AudioRouter
           path: out/AudioRouter.exe
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+
+      - name: Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Audio Router v${{ env.VERSION }}
           files: out/AudioRouter.exe
+          generate_release_notes: true
