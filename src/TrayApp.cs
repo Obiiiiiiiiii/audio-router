@@ -178,19 +178,31 @@ sealed class TrayApp : ApplicationContext
         base.ExitThreadCore();
     }
 
-    /// <summary>A plain white speaker (the Windows "Volume" glyph), so we don't need to ship an .ico.</summary>
+    /// <summary>
+    /// Bold filled speaker with two blue sound waves, drawn edge to edge so it reads clearly at tray size
+    /// and doesn't look like Windows' own (thin, white) volume icon sitting next to it.
+    /// </summary>
     static Icon MakeTrayIcon()
     {
         int size = SystemInformation.SmallIconSize.Width;
         using var bmp = new Bitmap(size, size);
         using (var g = Graphics.FromImage(bmp))
         {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             g.Clear(Color.Transparent);
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            using var font = new Font("Segoe MDL2 Assets", size * 0.85f, GraphicsUnit.Pixel);
-            using var brush = new SolidBrush(Color.White);
-            using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-            g.DrawString(Theme.GlyphVolume, font, brush, new RectangleF(0, 0, size, size), fmt);
+            float u = size / 16f; // design on a 16x16 grid
+
+            using var body = new SolidBrush(Color.White);
+            g.FillPolygon(body, new[]
+            {
+                new PointF(0.5f * u, 5f * u), new PointF(4f * u, 5f * u), new PointF(8.5f * u, 1f * u),
+                new PointF(8.5f * u, 15f * u), new PointF(4f * u, 11f * u), new PointF(0.5f * u, 11f * u),
+            });
+
+            using var wave = new Pen(Theme.Accent, 1.8f * u);
+            g.DrawArc(wave, 6.4f * u, 5.9f * u, 4.2f * u, 4.2f * u, -55, 110);
+            g.DrawArc(wave, 5.9f * u, 2.4f * u, 8.2f * u, 11.2f * u, -55, 110);
         }
         return Icon.FromHandle(bmp.GetHicon());
     }
