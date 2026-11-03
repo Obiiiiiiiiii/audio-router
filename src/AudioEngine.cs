@@ -16,7 +16,10 @@ sealed class AppView
     public required string DisplayName { get; init; }
     public string? ExePath { get; init; }
     public bool IsSystemSounds { get; init; }
+    /// <summary>Has an audio session right now (playing, or recently played).</summary>
     public bool Running { get; init; }
+    /// <summary>Process is open but has no audio session (quiet). Rules still apply when it makes sound.</summary>
+    public bool Open { get; init; }
     public float Volume { get; init; }
     public bool Muted { get; init; }
     public AppRule? Rule { get; init; }
@@ -59,6 +62,12 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
     int _reconcileQueued;
 
     sealed record ProcInfo(string Key, string? Path, string DisplayName);
+    sealed record SeenApp(string DisplayName, string? ExePath);
+
+    /// <summary>Apps that played sound (or were added by hand) and are still open; listed even when quiet.</summary>
+    readonly Dictionary<string, SeenApp> _seen = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>exe key -> pids of running processes, refreshed each reconcile.</summary>
+    Dictionary<string, List<uint>> _openPids = new(StringComparer.OrdinalIgnoreCase);
     sealed record LiveSession(string DeviceId, uint Pid, string InstanceId, string Key, IAudioSessionControl2 Control)
     {
         public ISimpleAudioVolume? Volume => Control as ISimpleAudioVolume;
@@ -135,6 +144,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             EnsureEnumerator();
             if (_devicesDirty || ++_ticksSinceDeviceScan >= 10) ScanDevices();
             ScanSessions();
+            ScanProcesses();
             ApplyRules();
             BuildViews();
         }
@@ -267,6 +277,8 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
                     }
                     keys.Add(key);
                     list.Add(new LiveSession(deviceId, pid, instanceId, key, s));
+                    if (key != SystemSoundsKey && pid != 0 && _procCache.TryGetValue(pid, out var pi))
+                        _seen[key] = new SeenApp(pi.DisplayName, pi.Path);
                 }
                 catch (Exception ex)
                 {
@@ -286,8 +298,27 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         var livePids = list.Select(s => s.Pid).ToHashSet();
         var liveInstances = list.Select(s => s.InstanceId).ToHashSet();
         foreach (var pid in _procCache.Keys.Where(p => !livePids.Contains(p)).ToList()) _procCache.Remove(pid);
-        foreach (var pid in _routedTo.Keys.Where(p => !livePids.Contains(p)).ToList()) _routedTo.Remove(pid);
         _volumeApplied.RemoveWhere(id => !liveInstances.Contains(id));
+    }
+
+    void ScanProcesses()
+    {
+        var map = new Dictionary<string, List<uint>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                var key = p.ProcessName + ".exe";
+                if (!map.TryGetValue(key, out var pids)) map[key] = pids = new List<uint>();
+                pids.Add((uint)p.Id);
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        _openPids = map;
+
+        // Closed apps drop off the list (saved ones reappear under "saved").
+        foreach (var key in _seen.Keys.Where(k => !map.ContainsKey(k)).ToList()) _seen.Remove(key);
     }
 
     void ApplyRules()
@@ -313,10 +344,19 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
 
         if (!_routing.Available) return;
 
-        foreach (var group in _sessions.Where(s => s.Pid != 0).GroupBy(s => s.Pid))
+        // Route every process we know belongs to a managed app: ones with sessions, plus open-but-quiet
+        // ones, so the device is already pinned when they start playing.
+        var targets = new Dictionary<uint, string>();
+        foreach (var s in _sessions.Where(s => s.Pid != 0)) targets[s.Pid] = s.Key;
+        foreach (var key in _seen.Keys)
         {
-            var pid = group.Key;
-            var key = group.First().Key;
+            if (_store.Get(key)?.ManageOutput != true || !_openPids.TryGetValue(key, out var pids)) continue;
+            foreach (var pid in pids) targets.TryAdd(pid, key);
+        }
+        foreach (var pid in _routedTo.Keys.Where(p => !targets.ContainsKey(p)).ToList()) _routedTo.Remove(pid);
+
+        foreach (var (pid, key) in targets)
+        {
             var rule = _store.Get(key);
             if (rule == null || !rule.ManageOutput) continue;
 
@@ -373,8 +413,27 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
             });
         }
 
-        // Saved apps that aren't making sound right now, so they can be edited or forgotten.
         var running = views.Select(v => v.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Open but quiet: no session to read, so show the saved level (or 100%).
+        foreach (var (key, seen) in _seen)
+        {
+            if (running.Contains(key)) continue;
+            var rule = _store.Get(key);
+            views.Add(new AppView
+            {
+                Key = key,
+                DisplayName = seen.DisplayName,
+                ExePath = seen.ExePath,
+                Open = true,
+                Volume = rule?.Volume ?? 1f,
+                Muted = rule?.Muted ?? false,
+                Rule = rule,
+            });
+            running.Add(key);
+        }
+
+        // Saved apps that aren't open, so they can be edited or forgotten.
         foreach (var (key, rule) in _store.Data.Apps)
         {
             if (running.Contains(key)) continue;
@@ -391,7 +450,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         }
 
         Apps = views
-            .OrderByDescending(v => v.Running)
+            .OrderByDescending(v => v.Running || v.Open)
             .ThenBy(v => v.IsSystemSounds ? 0 : 1)
             .ThenBy(v => v.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
@@ -469,6 +528,47 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
     void ForgetRoutesFor(string key)
     {
         foreach (var pid in _sessions.Where(s => s.Key == key).Select(s => s.Pid)) _routedTo.Remove(pid);
+    }
+
+    /// <summary>Open programs with a window that aren't listed yet, for the "Add app" menu.</summary>
+    public List<(string Key, string DisplayName, string? Path)> GetAddableApps()
+    {
+        var listed = Apps.Where(a => a.Running || a.Open).Select(a => a.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, (string, string, string?)>(StringComparer.OrdinalIgnoreCase);
+        int self = Environment.ProcessId;
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                if (p.Id == self || p.MainWindowHandle == IntPtr.Zero) continue;
+                var key = (p.ProcessName + ".exe").ToLowerInvariant();
+                if (listed.Contains(key) || result.ContainsKey(key) || key is "explorer.exe" or "applicationframehost.exe" or "textinputhost.exe" or "shellexperiencehost.exe") continue;
+                var path = QueryImagePath((uint)p.Id);
+                var display = p.ProcessName;
+                if (path != null)
+                {
+                    try
+                    {
+                        var desc = FileVersionInfo.GetVersionInfo(path).FileDescription?.Trim();
+                        if (!string.IsNullOrEmpty(desc)) display = desc;
+                    }
+                    catch { }
+                }
+                result[key] = (key, display, path);
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        return result.Values.OrderBy(v => v.Item2, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    /// <summary>List an app that hasn't made sound yet, and save it so its settings stick.</summary>
+    public void AddApp(string key, string displayName, string? path)
+    {
+        _seen[key] = new SeenApp(displayName, path);
+        _store.GetOrCreate(key, displayName);
+        _store.SaveSoon();
+        RequestReconcile();
     }
 
     public (float volume, bool muted)? GetMaster()

@@ -15,6 +15,7 @@ sealed class MixerWindow : Form
     readonly VolumeSlider _master = new();
     readonly Label _masterPct = new();
     readonly GlyphButton _masterMute = new();
+    readonly GlyphButton _add = new() { Text = "\uE710" };
     readonly Dictionary<string, AppRow> _rows = new();
     readonly Dictionary<string, Image?> _iconCache = new(StringComparer.OrdinalIgnoreCase);
     string _signature = "";
@@ -50,7 +51,9 @@ sealed class MixerWindow : Form
         _masterPct.ForeColor = Theme.Text;
         _masterMute.Text = Theme.GlyphVolume;
 
-        _header.Controls.AddRange(new Control[] { title, _defaultDevice, _master, _masterPct, _masterMute });
+        _header.Controls.AddRange(new Control[] { title, _defaultDevice, _master, _masterPct, _masterMute, _add });
+        new ToolTip().SetToolTip(_add, "Add an app that isn't making sound yet");
+        _add.Click += (_, _) => ShowAddMenu();
         Controls.AddRange(new Control[] { _header, _list, _footer });
 
         _master.ValueChanged += v => { _engine.SetMasterVolume(v / 100f); _masterPct.Text = v.ToString(); };
@@ -73,6 +76,7 @@ sealed class MixerWindow : Form
         Width = w;
         _header.SetBounds(0, 0, w, S(84));
         title.Location = new Point(S(14), S(10));
+        _add.SetBounds(w - S(40), S(8), S(28), S(26));
         _defaultDevice.SetBounds(S(14), S(34), w - S(28), S(18));
         _masterMute.SetBounds(S(10), S(54), S(28), S(24));
         _master.SetBounds(S(44), S(54), w - S(44) - S(56), S(24));
@@ -101,7 +105,7 @@ sealed class MixerWindow : Form
     {
         base.OnDeactivate(e);
         // Keep open while a device drop-down list is showing.
-        if (_rows.Values.Any(r => r.Interacting)) return;
+        if (_addMenuOpen || _rows.Values.Any(r => r.Interacting)) return;
         HidePopup();
     }
 
@@ -174,7 +178,7 @@ sealed class MixerWindow : Form
     }
 
     string Signature() => string.Join("|",
-        _engine.Apps.Select(a => $"{a.Key}:{a.Running}:{a.Rule?.ManageOutput}:{a.Rule?.OutputDeviceId}:{a.Rule?.BackupDeviceId}:{a.Rule != null}")
+        _engine.Apps.Select(a => $"{a.Key}:{a.Running}:{a.Open}:{a.Rule?.ManageOutput}:{a.Rule?.OutputDeviceId}:{a.Rule?.BackupDeviceId}:{a.Rule != null}")
         .Concat(_engine.Devices.Select(d => $"{d.Id}:{d.Connected}")));
 
     void Rebuild()
@@ -191,12 +195,12 @@ sealed class MixerWindow : Form
         bool shownSavedHeader = false;
         foreach (var app in _engine.Apps)
         {
-            if (!app.Running && !shownSavedHeader)
+            if (!app.Running && !app.Open && !shownSavedHeader)
             {
                 shownSavedHeader = true;
                 var lbl = new Label
                 {
-                    Text = "SAVED, NOT PLAYING",
+                    Text = "SAVED, NOT OPEN",
                     Font = Theme.Small,
                     ForeColor = Theme.TextDim,
                     BackColor = Theme.Background,
@@ -238,6 +242,27 @@ sealed class MixerWindow : Form
         if (Visible) PositionNearCursor();
         Invalidate();
     }
+
+    void ShowAddMenu()
+    {
+        var menu = new ContextMenuStrip { ShowImageMargin = true };
+        var apps = _engine.GetAddableApps();
+        if (apps.Count == 0)
+        {
+            menu.Items.Add(new ToolStripMenuItem("No other open apps") { Enabled = false });
+        }
+        foreach (var (key, name, path) in apps)
+        {
+            var image = path == null ? null : GetIcon(new AppView { Key = key, DisplayName = name, ExePath = path });
+            menu.Items.Add(new ToolStripMenuItem(name, image, (_, _) => _engine.AddApp(key, name, path)) { ToolTipText = key });
+        }
+        // Keep the popup open while the menu is up.
+        _addMenuOpen = true;
+        menu.Closed += (_, _) => { _addMenuOpen = false; BeginInvoke(() => { menu.Dispose(); Activate(); }); };
+        menu.Show(_add, new Point(0, _add.Height));
+    }
+
+    bool _addMenuOpen;
 
     Image? GetIcon(AppView app)
     {
@@ -293,7 +318,7 @@ sealed class AppRow : Panel
         {
             Text = app.DisplayName,
             AutoEllipsis = true,
-            ForeColor = app.Running ? Theme.Text : Theme.TextDim,
+            ForeColor = app.Running || app.Open ? Theme.Text : Theme.TextDim,
             BackColor = Theme.Surface,
             Font = Theme.Body,
             TextAlign = ContentAlignment.MiddleLeft,
