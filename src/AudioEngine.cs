@@ -450,6 +450,7 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         }
 
         Apps = views
+            .Where(v => !_store.Data.Hidden.ContainsKey(v.Key))
             .OrderByDescending(v => v.Running || v.Open)
             .ThenBy(v => v.IsSystemSounds ? 0 : 1)
             .ThenBy(v => v.DisplayName, StringComparer.CurrentCultureIgnoreCase)
@@ -570,6 +571,24 @@ sealed class AudioEngine : IMMNotificationClient, IDisposable
         _store.SaveSoon();
         RequestReconcile();
     }
+
+    /// <summary>Hide an app from the list. Its saved settings keep applying.</summary>
+    public void Hide(string key, string displayName)
+    {
+        _store.Data.Hidden[key] = displayName;
+        _store.SaveSoon();
+        RequestReconcile();
+    }
+
+    public void Unhide(string key)
+    {
+        _store.Data.Hidden.Remove(key);
+        _store.SaveSoon();
+        RequestReconcile();
+    }
+
+    public IReadOnlyList<(string Key, string DisplayName)> HiddenApps =>
+        _store.Data.Hidden.Select(kv => (kv.Key, kv.Value)).OrderBy(x => x.Value, StringComparer.CurrentCultureIgnoreCase).ToList();
 
     public (float volume, bool muted)? GetMaster()
     {

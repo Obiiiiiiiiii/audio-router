@@ -397,23 +397,21 @@ sealed class AppRow : Panel
                 FillCombos();
             }
 
+            // Bottom links: hide on the left, forget on the right.
+            var hide = MakeLink("Hide from list", ContentAlignment.MiddleLeft);
+            hide.SetBounds(S(40), y + S(2), S(150), S(18));
+            hide.LinkClicked += (_, _) => _engine.Hide(app.Key, app.DisplayName);
+            new ToolTip().SetToolTip(hide, "Its settings keep working. Unhide from the tray menu.");
+            Controls.Add(hide);
+
             if (app.Rule != null)
             {
-                var forget = new LinkLabel
-                {
-                    Text = "Forget saved settings",
-                    Font = Theme.Small,
-                    LinkColor = Theme.TextDim,
-                    ActiveLinkColor = Theme.Text,
-                    BackColor = Theme.Surface,
-                    LinkBehavior = LinkBehavior.HoverUnderline,
-                    TextAlign = ContentAlignment.MiddleRight,
-                };
+                var forget = MakeLink("Forget saved settings", ContentAlignment.MiddleRight);
                 forget.SetBounds(w - S(170), y + S(2), S(156), S(18));
                 forget.LinkClicked += (_, _) => _engine.Forget(app.Key);
                 Controls.Add(forget);
-                y += S(22);
             }
+            y += S(22);
         }
         PreferredRowHeight = y + (expanded ? S(6) : 0);
 
@@ -432,6 +430,17 @@ sealed class AppRow : Panel
 
         UpdateLive(app);
     }
+
+    static LinkLabel MakeLink(string text, ContentAlignment align) => new()
+    {
+        Text = text,
+        Font = Theme.Small,
+        LinkColor = Theme.TextDim,
+        ActiveLinkColor = Theme.Text,
+        BackColor = Theme.Surface,
+        LinkBehavior = LinkBehavior.HoverUnderline,
+        TextAlign = align,
+    };
 
     static Label MakeCaption(string text, int x, int y, Func<int, int> S)
     {

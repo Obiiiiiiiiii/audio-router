@@ -11,6 +11,7 @@ A small Windows tray app for per-app audio. Pick which output each app plays thr
 - **Matched by app name.** Rules are keyed on the exe name (`spotify.exe`), not its full path, so apps that update into new folders (Discord and friends) keep their settings.
 - **Master volume** for the current default output at the top.
 - **Quiet apps stay listed.** Windows only reports apps that have opened a sound stream, and many (Chrome, Spotify, Discord) close it when idle. Once an app has made sound it stays in the list until you close it.
+- **Hide apps.** Unfold an app and click **Hide from list** (handy for System sounds). Its saved settings keep working; bring it back from the tray menu under **Hidden apps**.
 - **Add app (+).** Set up a program before it makes any sound: pick it from the list of open windows. Its output is pinned straight away, and its saved volume is applied the moment it starts playing.
 
 ## Install
